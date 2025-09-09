@@ -3,6 +3,7 @@ pandas
 matplotlib
 langchain
 langchain-google-genai
+google-generativeai
 langchain_experimental
 python-dotenv
 openpyxl
