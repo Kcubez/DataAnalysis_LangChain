@@ -95,7 +95,7 @@ if uploaded_file is not None:
                     # 2. Create the Pandas DataFrame Agent with the custom prefix
                     agent = create_pandas_dataframe_agent(
                         llm,
-                        st.session_state.df,
+                        st.session_state.df.copy(),
                         prefix=PANDAS_AGENT_PREFIX,
                         verbose=True,
                         allow_dangerous_code=True,
@@ -174,7 +174,7 @@ if uploaded_file is not None:
 
                     # 5. Check if the plot file was created and display it
                     if os.path.exists('plot.png'):
-                        st.image('plot.png', caption="Generated Chart", use_column_width=True)
+                        st.image('plot.png', caption="Generated Chart",  width='stretch')
                         os.remove('plot.png') # Clean up the file
 
                     # Professional & Clean Report Format
@@ -233,7 +233,7 @@ if uploaded_file is not None:
 
                         # Quick Data Overview - Compact
                         st.markdown("### 📋 Dataset at a Glance")
-                        col1, col2, col3 = st.columns(3)
+                        col1, col2 = st.columns(2)
 
                         with col1:
                             st.markdown(f"""
@@ -250,16 +250,6 @@ if uploaded_file is not None:
                                         border-radius: 10px; padding: 20px; text-align: center;">
                                 <p style="font-size: 16px; color: #7f8c8d; margin: 0 0 5px 0;">Columns</p>
                                 <h3 style="margin: 0; color: #2c3e50; font-size: 28px;">{len(st.session_state.df.columns)}</h3>
-                            </div>
-                            """, unsafe_allow_html=True)
-
-                        with col3:
-                            numeric_cols = len(st.session_state.df.select_dtypes(include=['number']).columns)
-                            st.markdown(f"""
-                            <div style="background-color: #ffffff; border: 1px solid #e1e5e8; box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-                                        border-radius: 10px; padding: 20px; text-align: center;">
-                                <p style="font-size: 16px; color: #7f8c8d; margin: 0 0 5px 0;">Numeric Columns</p>
-                                <h3 style="margin: 0; color: #2c3e50; font-size: 28px;">{numeric_cols}</h3>
                             </div>
                             """, unsafe_allow_html=True)
 
