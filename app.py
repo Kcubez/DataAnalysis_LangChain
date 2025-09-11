@@ -1,19 +1,14 @@
 import streamlit as st
 import pandas as pd
-from dotenv import load_dotenv
 import os
 import io
 import matplotlib.pyplot as plt
 import time
 import html
 
-# LCEL and LLM imports
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_experimental.agents import create_pandas_dataframe_agent
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
-
-# Load environment variables for API keys
-load_dotenv()
 
 # Custom prompt prefix to ensure the agent uses the full dataframe
 PANDAS_AGENT_PREFIX = """
@@ -30,43 +25,224 @@ Total Revenue: $678,910.11
 Total Profit: $112,131.41
 """
 
+# Use st.cache_data to prevent re-reading the file on every interaction
+@st.cache_data
+def load_data(file_upload):
+    """Reads an uploaded file and returns a pandas DataFrame."""
+    try:
+        file_extension = os.path.splitext(file_upload.name)[1].lower()
+        file_content = file_upload.getvalue()
+        if file_extension == '.csv':
+            return pd.read_csv(io.BytesIO(file_content))
+        elif file_extension == '.xlsx':
+            return pd.read_excel(io.BytesIO(file_content))
+    except UnicodeDecodeError:
+        # Fallback for common encoding issues
+        st.warning("File could not be read with standard UTF-8 encoding. Trying with 'latin1'...")
+        file_content = file_upload.getvalue() # Re-read bytes for the new reader
+        return pd.read_csv(io.BytesIO(file_content), encoding='latin1')
+
 ### Streamlit UI
 
 st.set_page_config(page_title="AI Spreadsheet Analyst", layout="wide")
 st.title("📊 AI Spreadsheet Analyst")
-st.markdown("Upload a CSV or Excel file and ask questions about your data. You can also ask for charts!")
 
-# Session state to store the dataframe
+# --- Custom CSS for a Professional & Theme-Aware UI ---
+st.markdown("""
+<style>
+    /* --- General & Light Mode --- */
+    .stApp {
+        background-color: var(--background-color);
+    }
+
+    /* --- Professional Button Styling --- */
+    /* Unifying button styles for "Get Answer", "Save", and "Browse files" */
+    div[data-testid="stVerticalBlock"] .stButton > button,
+    [data-testid="stFormSubmitButton"] button,
+    [data-testid="stFileUploader"] button {
+        border-radius: 8px;
+        font-weight: 600;
+        transition: all 0.2s ease-in-out;
+        border: none;
+        padding: 10px 24px;
+        height: 40px; /* Set a fixed height for alignment */
+        background-color: #007bff !important; /* A professional blue */
+        color: white !important; /* Use !important to override file uploader's default text color */
+    }
+
+    div[data-testid="stVerticalBlock"] .stButton > button:hover,
+    [data-testid="stFormSubmitButton"] button:hover,
+    [data-testid="stFileUploader"] button:hover {
+        background-color: #0069d9 !important; /* A slightly darker blue on hover */
+        color: white !important;
+    }
+
+    /* Adjust API Key input to match button height */
+    [data-testid="stForm"] [data-testid="stTextInput"] input {
+        height: 40px !important; /* Match button height */
+        box-sizing: border-box !important; /* Include padding in height calculation */
+    }
+
+    /* Reset style for the file uploader's clear button ('x') */
+    [data-testid="stFileUploader"] button[aria-label^="Remove"] {
+        background-color: transparent !important;
+        color: inherit !important;
+        border: none !important;
+        padding: 0 !important; /* Reset padding for the small icon button */
+    }
+
+    [data-testid="stFileUploader"] button[aria-label^="Remove"]:hover {
+        background-color: transparent !important;
+        color: var(--primary-color) !important; /* Add a subtle hover effect */
+    }
+
+    /* Spacing for Step headers */
+    .step-header {
+        margin-top: 2.5rem; /* A more conventional spacing value */
+    }
+
+    /* --- Report Styling (Theme-Aware) --- */
+    .report-header {
+        background-color: #2c3e50; padding: 20px; border-radius: 10px; margin: 20px 0;
+        text-align: center; box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+    }
+    .report-header h2 { color: white; margin: 0; font-weight: 600; letter-spacing: 1px; }
+
+    .report-metadata, .data-glance-card, .smart-insight {
+        background-color: var(--secondary-background-color);
+        border: 1px solid #e1e5e8;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        border-radius: 10px;
+        padding: 20px;
+        margin: 20px 0;
+        color: var(--text-color);
+    }
+
+    .report-metadata .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
+    .report-metadata .query { margin-top: 15px; padding-top: 15px; border-top: 1px solid #dee2e6; }
+
+    .key-findings-container {
+        background-color: #e8f5e9; border-left: 5px solid #28a745;
+        padding: 25px; border-radius: 8px; margin: 20px 0;
+    }
+    .key-findings-container .content-code {
+        font-family: 'Consolas', 'Courier New', monospace; font-size: 18px;
+        line-height: 1.6; color: #155724;
+        white-space: pre-wrap; word-wrap: break-word;
+    }
+    .key-findings-container .content-text {
+        font-size: 20px; line-height: 1.7; color: #155724;
+    }
+
+    .data-glance-card { text-align: center; height: 100%; }
+    .data-glance-card p { font-size: 16px; color: var(--text-color); opacity: 0.7; margin: 0 0 5px 0; }
+    .data-glance-card h3 { margin: 0; font-size: 28px; color: var(--text-color); }
+
+    .smart-insight h4 { margin: 0 0 10px 0; color: var(--text-color); }
+    .smart-insight p { margin: 0; font-size: 16px; color: var(--text-color); }
+    .insight-green { border-left: 4px solid #2ecc71; }
+    .insight-blue { border-left: 4px solid #3498db; }
+    .insight-red { border-left: 4px solid #e74c3c; }
+
+    .report-footer {
+        text-align: center;
+        padding: 10px 0;
+        margin-top: 25px;
+        border-top: 1px solid #e1e5e8;
+        color: var(--text-color);
+        opacity: 0.6;
+    }
+
+    /* --- Dark Mode Overrides --- */
+    [data-theme="dark"] .report-metadata,
+    [data-theme="dark"] .data-glance-card,
+    [data-theme="dark"] .smart-insight,
+    [data-theme="dark"] .report-footer {
+        border: 1px solid #3d3f4b;
+    }
+    [data-theme="dark"] .report-metadata .query {
+        border-top: 1px solid #3d3f4b;
+    }
+
+    [data-theme="dark"] .key-findings-container {
+        background-color: #0b2d15;
+    }
+    [data-theme="dark"] .key-findings-container .content-code,
+    [data-theme="dark"] .key-findings-container .content-text {
+        color: #a3e9b8;
+    }
+
+    /* --- Mobile View Adjustments --- */
+    @media (max-width: 768px) {
+        .report-metadata .grid {
+            grid-template-columns: 1fr; /* Stack grid items into a single column */
+            gap: 10px; /* Adjust gap for stacked layout */
+        }
+        /* Reduce vertical space between stacked "Dataset at a Glance" cards on mobile */
+        .data-glance-card {
+            margin: 10px 0;
+        }
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# Session state initialization
 if 'df' not in st.session_state:
     st.session_state.df = None
+if 'api_key' not in st.session_state:
+    st.session_state.api_key = None
 
-# File uploader
-uploaded_file = st.file_uploader("Choose a file", type=["csv", "xlsx"])
+# --- Configuration Expander for API Key ---
+with st.expander("🔑 Configuration: Enter Your API Key", expanded=not st.session_state.api_key):
+    # Display a status message if the key is already set
+    if st.session_state.api_key:
+        st.info("An API key is already configured. Enter a new key to replace it, or submit an empty field to clear it.")
+
+    with st.form(key='api_key_form'):
+        # Use columns for responsive layout. They will be side-by-side on desktop
+        # and stacked vertically on mobile.
+        col1, col2 = st.columns([5, 1])
+
+        with col1:
+            api_key_input = st.text_input(
+                "Google API Key",
+                type="password",
+                placeholder="Enter your Google API Key...",
+                label_visibility="collapsed"
+            )
+
+        with col2:
+            submitted = st.form_submit_button(label="Save", use_container_width=True)
+
+        if submitted:
+            st.session_state.api_key = api_key_input or None
+            if api_key_input:
+                st.success("✓ API Key saved!")
+            else:
+                st.warning("API Key cleared.")
+
+            time.sleep(1) # Give user time to see message
+            st.rerun()
+
+# --- Main App Logic ---
+if not st.session_state.api_key:
+    st.info("Please enter your Google API Key in the configuration section above to start the analysis.")
+    st.stop()
+
+st.markdown("<div class='step-header'><h3>Step 1: Upload Your Spreadsheet</h3></div>", unsafe_allow_html=True)
+uploaded_file = st.file_uploader("Upload a CSV or Excel file to begin.", type=["csv", "xlsx"], label_visibility="collapsed")
 
 if uploaded_file is not None:
-    # Use st.cache_data to prevent re-reading the file on every interaction
-    @st.cache_data
-    def load_data(file):
-        file_extension = os.path.splitext(file.name)[1].lower()
-        if file_extension == '.csv':
-            try:
-                return pd.read_csv(file)
-            except UnicodeDecodeError:
-                return pd.read_csv(file, encoding='latin1')
-        elif file_extension == '.xlsx':
-            return pd.read_excel(file)
-        else:
-            raise ValueError("Unsupported file format. Please upload a CSV or XLSX file.")
-
     try:
         st.session_state.df = load_data(uploaded_file)
         st.success("File loaded successfully!")
-        st.subheader("First 5 rows of the data")
+        st.markdown("#### Data Preview (First 5 Rows)")
         st.dataframe(st.session_state.df.head())
     except Exception as e:
         st.error(f"An unexpected error occurred while loading the file: {e}")
 
     # Text input for the report query
+    st.markdown("<div class='step-header'><h3>Step 2: Ask Your Question</h3></div>", unsafe_allow_html=True)
     user_query = st.text_area(
         "Enter your question about the data:",
         placeholder="e.g., 'What is the average age?' or 'Make a bar chart of total profit by country.'",
@@ -81,6 +257,7 @@ if uploaded_file is not None:
                     # 1. Define the LLM with reduced temperature for more deterministic responses
                     llm = ChatGoogleGenerativeAI(
                         model="gemini-2.5-flash",
+                        google_api_key=st.session_state.api_key,
                         temperature=0, 
                         max_tokens=4096,
                         timeout=60,
@@ -179,121 +356,74 @@ if uploaded_file is not None:
 
                     # Professional & Clean Report Format
                     if output:
-                        # Professional Header
-                        st.markdown("""
-                        <div style="background-color: #2c3e50;
-                                    padding: 20px; border-radius: 10px; margin: 20px 0; text-align: center; box-shadow: 0 4px 8px rgba(0,0,0,0.1);">
-                            <h2 style="color: white; margin: 0; font-weight: 600; letter-spacing: 1px;">Analysis Report</h2>
-                        </div>
-                        """, unsafe_allow_html=True)
+                        st.markdown('<div class="report-header"><h2>Analysis Report</h2></div>', unsafe_allow_html=True)
 
                         # Report Metadata - Clean & Simple
                         current_time = time.strftime("%B %d, %Y at %I:%M %p")
                         st.markdown(f"""
-                        <div style="background-color: #ffffff; border: 1px solid #e1e5e8; box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-                                    border-radius: 10px; padding: 20px; margin: 20px 0; color: #34495e;">
-                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                        <div class="report-metadata">
+                            <div class="grid">
                                 <div><strong>📅 Generated:</strong> {current_time}</div>
-                                <div><strong>📁 Dataset:</strong> {uploaded_file.name}</div>
+                                <div><strong>📁 Dataset:</strong> {html.escape(uploaded_file.name)}</div>
                             </div>
-                            <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #dee2e6;">
-                                <strong>❓ Query:</strong> <em>"{user_query}"</em>
+                            <div class="query">
+                                <strong>❓ Query:</strong> <em>"{html.escape(user_query)}"</em>
                             </div>
                         </div>
                         """, unsafe_allow_html=True)
 
                         # Main Answer - Formatted for clarity
                         st.markdown("### 💡 Key Findings")
-
-                        # Pre-format the output to handle newlines for HTML and escape characters
-                        formatted_output = html.escape(output).replace('\n', '<br>')
+                        safe_output = html.escape(output)
 
                         # Check for multi-line or numerical output
                         if '\n' in output or any(char.isdigit() for char in output):
-                            # For numerical or multi-line results - clean and structured
-                            st.markdown(f"""
-                            <div style="background-color: #e8f5e9; border-left: 5px solid #28a745;
-                                        padding: 25px; border-radius: 8px; margin: 20px 0;">
-                                <div style="font-family: 'Consolas', 'Courier New', monospace; font-size: 18px;
-                                           line-height: 1.6; color: #155724;">
-                                    {formatted_output}
-                                </div>
-                            </div>
-                            """, unsafe_allow_html=True)
+                            st.markdown(f'<div class="key-findings-container"><div class="content-code">{safe_output}</div></div>', unsafe_allow_html=True)
                         else:
-                            # For qualitative/text results - clean and readable
-                            st.markdown(f"""
-                            <div style="background-color: #e8f5e9; border-left: 5px solid #28a745;
-                                        padding: 25px; border-radius: 8px; margin: 20px 0;">
-                                <div style="font-size: 20px; line-height: 1.7; color: #155724;">
-                                    {formatted_output}
-                                </div>
-                            </div>
-                            """, unsafe_allow_html=True)
+                            st.markdown(f'<div class="key-findings-container"><div class="content-text">{safe_output}</div></div>', unsafe_allow_html=True)
 
                         # Quick Data Overview - Compact
                         st.markdown("### 📋 Dataset at a Glance")
                         col1, col2 = st.columns(2)
 
                         with col1:
-                            st.markdown(f"""
-                            <div style="background-color: #ffffff; border: 1px solid #e1e5e8; box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-                                        border-radius: 10px; padding: 20px; text-align: center;">
-                                <p style="font-size: 16px; color: #7f8c8d; margin: 0 0 5px 0;">Rows</p>
-                                <h3 style="margin: 0; color: #2c3e50; font-size: 28px;">{len(st.session_state.df):,}</h3>
-                            </div>
-                            """, unsafe_allow_html=True)
+                            st.markdown(f'<div class="data-glance-card"><p>Rows</p><h3>{len(st.session_state.df):,}</h3></div>', unsafe_allow_html=True)
 
                         with col2:
-                            st.markdown(f"""
-                            <div style="background-color: #ffffff; border: 1px solid #e1e5e8; box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-                                        border-radius: 10px; padding: 20px; text-align: center;">
-                                <p style="font-size: 16px; color: #7f8c8d; margin: 0 0 5px 0;">Columns</p>
-                                <h3 style="margin: 0; color: #2c3e50; font-size: 28px;">{len(st.session_state.df.columns)}</h3>
-                            </div>
-                            """, unsafe_allow_html=True)
+                            st.markdown(f'<div class="data-glance-card"><p>Columns</p><h3>{len(st.session_state.df.columns)}</h3></div>', unsafe_allow_html=True)
 
                         # Smart Insights - Context Aware & Brief
                         if any(keyword in user_query.lower() for keyword in ["top", "best", "highest", "maximum", "largest"]):
                             st.markdown("""
-                            <div style="background-color: #f7f9f9; border-left: 4px solid #2ecc71;
-                                        padding: 20px; border-radius: 8px; margin: 20px 0;">
-                                <h4 style="margin: 0 0 10px 0; color: #2c3e50;">💡 Smart Insight</h4>
-                                <p style="margin: 0; color: #34495e; font-size: 16px;">
-                                    This analysis focuses on <strong>top-performing</strong> metrics in your dataset.
-                                </p>
+                            <div class="smart-insight insight-green">
+                                <h4>💡 Smart Insight</h4>
+                                <p>This analysis focuses on <strong>top-performing</strong> metrics in your dataset.</p>
                             </div>
                             """, unsafe_allow_html=True)
                         elif any(keyword in user_query.lower() for keyword in ["average", "mean", "median"]):
                             st.markdown("""
-                            <div style="background-color: #f7f9f9; border-left: 4px solid #3498db;
-                                        padding: 20px; border-radius: 8px; margin: 20px 0;">
-                                <h4 style="margin: 0 0 10px 0; color: #2c3e50;">💡 Smart Insight</h4>
-                                <p style="margin: 0; color: #34495e; font-size: 16px;">
-                                    This report includes <strong>statistical analysis</strong> (e.g., mean, median) of your data.
-                                </p>
+                            <div class="smart-insight insight-blue">
+                                <h4>💡 Smart Insight</h4>
+                                <p>This report includes <strong>statistical analysis</strong> (e.g., mean, median) of your data.</p>
                             </div>
                             """, unsafe_allow_html=True)
                         elif any(keyword in user_query.lower() for keyword in ["chart", "plot", "graph", "bar", "pie", "line"]):
                             st.markdown("""
-                            <div style="background-color: #f7f9f9; border-left: 4px solid #e74c3c;
-                                        padding: 20px; border-radius: 8px; margin: 20px 0;">
-                                <h4 style="margin: 0 0 10px 0; color: #2c3e50;">💡 Smart Insight</h4>
-                                <p style="margin: 0; color: #34495e; font-size: 16px;">
-                                    A <strong>visualization</strong> has been generated to illustrate patterns in your data.
-                                </p>
+                            <div class="smart-insight insight-red">
+                                <h4>💡 Smart Insight</h4>
+                                <p>A <strong>visualization</strong> has been generated to illustrate patterns in your data.</p>
                             </div>
                             """, unsafe_allow_html=True)
 
                         # Clean Footer
-                        st.markdown("""
-                        <div style="text-align: center; padding: 20px; margin-top: 40px;
-                                    border-top: 1px solid #e1e5e8; color: #95a5a6;">
-                            <small>Report generated by AI Spreadsheet Analyst</small>
-                        </div>
-                        """, unsafe_allow_html=True)
+                        st.markdown('<div class="report-footer"><small>Report generated by AI Spreadsheet Analyst</small></div>', unsafe_allow_html=True)
 
                 except Exception as e:
-                    st.error(f"An error occurred: {e}")
+                    error_message = str(e)
+                    # Check for invalid API key error and provide a user-friendly message
+                    if "API key not valid" in error_message or "API_KEY_INVALID" in error_message:
+                        st.error("The Google API Key is invalid. Please enter a valid key in the configuration section above and try again.")
+                    else:
+                        st.error(f"An error occurred: {e}")
         else:
             st.warning("Please upload a file and enter a query.")
